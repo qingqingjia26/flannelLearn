@@ -9,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
@@ -120,16 +121,16 @@ func (r *Etcdv3Registry) getLeaseIdTtl(client *clientv3.Client, leaseId int64) (
 }
 
 func (r *Etcdv3Registry) createSubnet(ctx context.Context, sn ip.IP4Net, attrs *LeaseAttrs, Ttl int64) (int64, error) {
-	if allSubNet, _, err := r.getSubnets(context.TODO()); err != nil {
-		return -1, err
-	} else {
-		for _, subnet := range allSubNet {
-			if subnet.Subnet.Contains(sn.IP) || sn.Contains(subnet.Subnet.IP) {
-				log.Println("input subnet:", sn, " subnet in etcd:", subnet.Subnet, "this new subnet overlaps with existing subnets")
-				return -1, errors.New("this new subnet overlaps with existing subnets")
-			}
-		}
-	}
+	// if allSubNet, _, err := r.getSubnets(context.TODO()); err != nil {
+	// 	return -1, err
+	// } else {
+	// 	for _, subnet := range allSubNet {
+	// 		if subnet.Subnet.Contains(sn.IP) || sn.Contains(subnet.Subnet.IP) {
+	// 			log.Println("input subnet:", sn, " subnet in etcd:", subnet.Subnet, "this new subnet overlaps with existing subnets")
+	// 			return -1, errors.New("this new subnet overlaps with existing subnets")
+	// 		}
+	// 	}
+	// }
 
 	leaseId, err := r.getLeaseId(r.client, Ttl)
 	if err != nil {
@@ -196,10 +197,11 @@ func (r *Etcdv3Registry) getSubnets(ctx context.Context) ([]Lease, uint64, error
 				log.Println("ignore key:", string(key), " value:", string(value), err)
 				continue
 			}
-			lease.Ttl, err = r.getLeaseIdTtl(client, leaseId)
+			Ttl, err := r.getLeaseIdTtl(client, leaseId)
+			lease.Expiration = time.Now().Local().Add(time.Duration(Ttl) * time.Second)
 			if err != nil {
 				log.Println("getLeaseIdTtl failed:", err)
-				lease.Ttl = -1
+				lease.Expiration = time.Now()
 			}
 			allLease = append(allLease, lease)
 		}
@@ -235,10 +237,11 @@ func (r *Etcdv3Registry) getSubnet(ctx context.Context, sn ip.IP4Net) (*Lease, u
 		Subnet: sn,
 		Attrs:  leaseAttr,
 	}
-	lease.Ttl, err = r.getLeaseIdTtl(client, resp.Kvs[0].Lease)
+	Ttl, err := r.getLeaseIdTtl(client, resp.Kvs[0].Lease)
+	lease.Expiration = time.Now().Local().Add(time.Duration(Ttl) * time.Second)
 	if err != nil {
 		log.Println("getLeaseIdTtl failed:", err)
-		lease.Ttl = -1
+		lease.Expiration = time.Now()
 	}
 	return &lease, uint64(resp.Header.Revision), err
 }
@@ -246,37 +249,44 @@ func (r *Etcdv3Registry) getSubnet(ctx context.Context, sn ip.IP4Net) (*Lease, u
 func (r *Etcdv3Registry) watchSubnet(ctx context.Context, since uint64, sn ip.IP4Net) (Event, uint64, error) {
 	client := r.client
 	watcher := clientv3.NewWatcher(client)
-	watchRespChan := watcher.Watch(ctx, path.Join(r.config.Prefix, "subnets", sn.IP.String()+"-"+strconv.Itoa(int(sn.PrefixLen))), clientv3.WithRev(int64(since)))
+	watchRespChan := watcher.Watch(ctx, path.Join(r.config.Prefix, "subnets", sn.IP.String()+"-"+strconv.Itoa(int(sn.PrefixLen))), clientv3.WithRev(int64(since)+1))
 	// 处理kv变化事件
-	for watchResp := range watchRespChan {
-		for _, event := range watchResp.Events {
-			switch event.Type {
-			case mvccpb.PUT:
-				preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
-				key, value := event.Kv.Key, event.Kv.Value
-				if subnetRegexp.Match(key[preLen:]) {
-					lease, err := parseKeyValue(key, value, preLen)
-					if err != nil {
-						log.Println("key:", string(key), " value:", string(value), err)
-						continue
+	// var watchResp WatchResponse
+	select {
+	case <-ctx.Done():
+		return Event{}, 0, ctx.Err()
+	case watchResp := <-watchRespChan:
+		{
+			for _, event := range watchResp.Events {
+				switch event.Type {
+				case mvccpb.PUT:
+					preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
+					key, value := event.Kv.Key, event.Kv.Value
+					if subnetRegexp.Match(key[preLen:]) {
+						lease, err := parseKeyValue(key, value, preLen)
+						if err != nil {
+							log.Println("key:", string(key), " value:", string(value), err)
+							continue
+						}
+						Ttl, err := r.getLeaseIdTtl(client, event.Kv.Lease)
+						lease.Expiration = time.Now().Local().Add(time.Duration(Ttl) * time.Second)
+						if err != nil {
+							return Event{}, 0, err
+						}
+						return Event{Type: EventAdded, Lease: lease}, uint64(watchResp.Header.Revision), nil
 					}
-					lease.Ttl, err = r.getLeaseIdTtl(client, event.Kv.Lease)
-					if err != nil {
-						return Event{}, 0, err
+				case mvccpb.DELETE:
+					preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
+					key, value := event.Kv.Key, event.Kv.Value
+					if subnetRegexp.Match(key[preLen:]) {
+						ipNet, err := parseKey2Ipnet(key, preLen)
+						if err != nil {
+							log.Println("key:", string(key), " value:", string(value), err)
+							continue
+						}
+						lease := Lease{Subnet: ipNet}
+						return Event{Type: EventRemoved, Lease: lease}, uint64(watchResp.Header.Revision), nil
 					}
-					return Event{Type: EventAdded, Lease: lease}, uint64(watchResp.Header.Revision), nil
-				}
-			case mvccpb.DELETE:
-				preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
-				key, value := event.Kv.Key, event.Kv.Value
-				if subnetRegexp.Match(key[preLen:]) {
-					ipNet, err := parseKey2Ipnet(key, preLen)
-					if err != nil {
-						log.Println("key:", string(key), " value:", string(value), err)
-						continue
-					}
-					lease := Lease{Subnet: ipNet}
-					return Event{Type: EventRemoved, Lease: lease}, uint64(watchResp.Header.Revision), nil
 				}
 			}
 		}
@@ -289,40 +299,45 @@ func (r *Etcdv3Registry) watchSubnets(ctx context.Context, since uint64) (Event,
 	watcher := clientv3.NewWatcher(client)
 	watchRespChan := watcher.Watch(ctx, path.Join(r.config.Prefix, "subnets"), clientv3.WithPrefix())
 	// 处理kv变化事件
-	for watchResp := range watchRespChan {
-		for _, event := range watchResp.Events {
-			switch event.Type {
-			case mvccpb.PUT:
-				preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
-				key, value := event.Kv.Key, event.Kv.Value
-				if subnetRegexp.Match(key[preLen:]) {
-					lease, err := parseKeyValue(key, value, preLen)
-					if err != nil {
-						log.Println("key:", string(key), " value:", string(value), err)
-						continue
+	select {
+	case <-ctx.Done():
+		return Event{}, 0, ctx.Err()
+	case watchResp := <-watchRespChan:
+		{
+			for _, event := range watchResp.Events {
+				switch event.Type {
+				case mvccpb.PUT:
+					preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
+					key, value := event.Kv.Key, event.Kv.Value
+					if subnetRegexp.Match(key[preLen:]) {
+						lease, err := parseKeyValue(key, value, preLen)
+						if err != nil {
+							log.Println("key:", string(key), " value:", string(value), err)
+							continue
+						}
+						Ttl, err := r.getLeaseIdTtl(client, event.Kv.Lease)
+						lease.Expiration = time.Now().Local().Add(time.Duration(Ttl) * time.Second)
+						if err != nil {
+							return Event{}, 0, err
+						}
+						return Event{Type: EventAdded, Lease: lease}, uint64(watchResp.Header.Revision), nil
 					}
-					lease.Ttl, err = r.getLeaseIdTtl(client, event.Kv.Lease)
-					if err != nil {
-						return Event{}, 0, err
+				case mvccpb.DELETE:
+					preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
+					key, value := event.Kv.Key, event.Kv.Value
+					if subnetRegexp.Match(key[preLen:]) {
+						ipNet, err := parseKey2Ipnet(key, preLen)
+						if err != nil {
+							log.Println("key:", string(key), " value:", string(value), err)
+							continue
+						}
+						lease := Lease{Subnet: ipNet}
+						return Event{Type: EventRemoved, Lease: lease}, uint64(watchResp.Header.Revision), nil
 					}
-					return Event{Type: EventAdded, Lease: lease}, 0, nil
-				}
-			case mvccpb.DELETE:
-				preLen := len(path.Join(r.config.Prefix, "subnets")) + 1
-				key, value := event.Kv.Key, event.Kv.Value
-				if subnetRegexp.Match(key[preLen:]) {
-					ipNet, err := parseKey2Ipnet(key, preLen)
-					if err != nil {
-						log.Println("key:", string(key), " value:", string(value), err)
-						continue
-					}
-					lease := Lease{Subnet: ipNet}
-					return Event{Type: EventRemoved, Lease: lease}, 0, nil
 				}
 			}
 		}
 	}
-
 	return Event{}, 0, errors.New("sth wrong in watchSubnets")
 }
 

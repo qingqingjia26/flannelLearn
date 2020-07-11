@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/qingqingjia26/flannelLearn/pkg/ip"
 	. "github.com/qingqingjia26/flannelLearn/subnet"
@@ -31,7 +32,7 @@ import (
 
 const (
 	raceRetries = 10
-	subnetTTL   = 24 * 3600
+	subnetTTL   = 24 * time.Hour
 )
 
 type LocalManager struct {
@@ -148,18 +149,18 @@ func (m *LocalManager) tryAcquireLease(ctx context.Context, config *Config, extI
 		if isSubnetConfigCompat(config, l.Subnet) {
 			log.Infof("Found lease (%v) for current IP (%v), reusing", l.Subnet, extIaddr)
 
-			ttl := int64(-1)
-			if l.Ttl <= 0 {
+			ttl := time.Duration(0)
+			if !l.Expiration.IsZero() {
 				// Not a reservation
 				ttl = subnetTTL
 			}
-			exp, err := m.registry.updateSubnet(ctx, l.Subnet, attrs, ttl, 0)
+			exp, err := m.registry.updateSubnet(ctx, l.Subnet, attrs, time2ttl(ttl), 0)
 			if err != nil {
 				return nil, err
 			}
 
 			l.Attrs = *attrs
-			l.Ttl = exp
+			l.Expiration = time.Now().Local().Add(time.Duration(exp) * time.Second)
 			return l, nil
 		} else {
 			log.Infof("Found lease (%v) for current IP (%v) but not compatible with current config, deleting", l.Subnet, extIaddr)
@@ -178,18 +179,19 @@ func (m *LocalManager) tryAcquireLease(ctx context.Context, config *Config, extI
 			if isSubnetConfigCompat(config, l.Subnet) {
 				log.Infof("Found lease (%v) matching previously leased subnet, reusing", l.Subnet)
 
-				ttl := int64(-1)
-				if l.Ttl < 0 {
+				ttl := time.Duration(0)
+				if !l.Expiration.IsZero() {
 					// Not a reservation
 					ttl = subnetTTL
 				}
-				exp, err := m.registry.updateSubnet(ctx, l.Subnet, attrs, ttl, 0)
+				exp, err := m.registry.updateSubnet(ctx, l.Subnet, attrs, time2ttl(ttl), 0)
 				if err != nil {
 					return nil, err
 				}
 
 				l.Attrs = *attrs
-				l.Ttl = exp
+				l.Expiration = time.Now().Local().Add(time.Duration(exp) * time.Second)
+
 				return l, nil
 			} else {
 				log.Infof("Found lease (%v) matching previously leased subnet but not compatible with current config, deleting", l.Subnet)
@@ -216,14 +218,14 @@ func (m *LocalManager) tryAcquireLease(ctx context.Context, config *Config, extI
 		}
 	}
 
-	exp, err := m.registry.createSubnet(ctx, sn, attrs, subnetTTL)
+	exp, err := m.registry.createSubnet(ctx, sn, attrs, time2ttl(subnetTTL))
 	switch {
 	case err == nil:
 		log.Infof("Allocated lease (%v) to current node (%v) ", sn, extIaddr)
 		return &Lease{
-			Subnet: sn,
-			Attrs:  *attrs,
-			Ttl:    exp,
+			Subnet:     sn,
+			Attrs:      *attrs,
+			Expiration: time.Now().Local().Add(time.Duration(exp) * time.Second),
 		}, nil
 	case isErrEtcdNodeExist(err):
 		return nil, errTryAgain
@@ -257,12 +259,12 @@ OuterLoop:
 }
 
 func (m *LocalManager) RenewLease(ctx context.Context, lease *Lease) error {
-	exp, err := m.registry.updateSubnet(ctx, lease.Subnet, &lease.Attrs, subnetTTL, 0)
+	exp, err := m.registry.updateSubnet(ctx, lease.Subnet, &lease.Attrs, time2ttl(subnetTTL), 0)
 	if err != nil {
 		return err
 	}
 
-	lease.Ttl = exp
+	lease.Expiration = time.Now().Local().Add(time.Duration(exp) * time.Second)
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	. "github.com/qingqingjia26/flannelLearn/subnet"
 
@@ -70,9 +71,17 @@ func parseKeyValue(key, value []byte, preLen int) (Lease, error) {
 		return Lease{}, err
 	}
 	lease := Lease{
-		Subnet: ipNet,
-		Attrs:  leaseAttr,
-		Ttl:    -1,
+		Subnet:     ipNet,
+		Attrs:      leaseAttr,
+		Expiration: time.Now(),
 	}
 	return lease, nil
+}
+
+func time2ttl(t time.Duration) int64 {
+	return int64(t) / int64(time.Second)
+}
+
+func ttl2time(ttl int64) time.Duration {
+	return time.Duration(ttl) * time.Second
 }
