@@ -37,7 +37,8 @@ import (
 	"github.com/qingqingjia26/flannelLearn/subnet"
 	"github.com/qingqingjia26/flannelLearn/subnet/etcdv2"
 	"github.com/qingqingjia26/flannelLearn/subnet/etcdv3"
-	"github.com/qingqingjia26/flannelLearn/subnet/kube"
+
+	// "github.com/qingqingjia26/flannelLearn/subnet/kube"
 	"github.com/qingqingjia26/flannelLearn/version"
 
 	"time"
@@ -49,7 +50,6 @@ import (
 	// Backends need to be imported for their init() to get executed and them to register
 	"github.com/coreos/go-systemd/daemon"
 	"github.com/qingqingjia26/flannelLearn/backend"
-	_ "github.com/qingqingjia26/flannelLearn/backend/alivpc"
 	_ "github.com/qingqingjia26/flannelLearn/backend/alloc"
 	_ "github.com/qingqingjia26/flannelLearn/backend/awsvpc"
 	_ "github.com/qingqingjia26/flannelLearn/backend/extension"
@@ -161,9 +161,9 @@ func usage() {
 }
 
 func newSubnetManager() (subnet.Manager, error) {
-	if opts.kubeSubnetMgr {
-		return kube.NewSubnetManager(opts.kubeApiUrl, opts.kubeConfigFile, opts.kubeAnnotationPrefix, opts.netConfPath)
-	}
+	// if opts.kubeSubnetMgr {
+	// 	return kube.NewSubnetManager(opts.kubeApiUrl, opts.kubeConfigFile, opts.kubeAnnotationPrefix, opts.netConfPath)
+	// }
 
 	cfg := &etcdv2.EtcdConfig{
 		Endpoints: strings.Split(opts.etcdEndpoints, ","),
@@ -180,10 +180,10 @@ func newSubnetManager() (subnet.Manager, error) {
 	return etcdv2.NewLocalManager(cfg, prevSubnet)
 }
 
-func newSubnetManagerEctdv3(subnet.Manager, error) {
-	if opts.kubeSubnetMgr {
-		return kube.NewSubnetManager(opts.kubeApiUrl, opts.kubeConfigFile, opts.kubeAnnotationPrefix, opts.netConfPath)
-	}
+func newSubnetManagerEctdv3() (subnet.Manager, error) {
+	// if opts.kubeSubnetMgr {
+	// 	return kube.NewSubnetManager(opts.kubeApiUrl, opts.kubeConfigFile, opts.kubeAnnotationPrefix, opts.netConfPath)
+	// }
 
 	cfg := &etcdv3.EtcdConfig{
 		Endpoints: strings.Split(opts.etcdEndpoints, ","),

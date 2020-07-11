@@ -24,7 +24,8 @@ import (
 
 	etcd "github.com/coreos/etcd/client"
 	log "github.com/golang/glog"
-	. "github.com/qingqingjia26/flannelLearn/pkg/ip"
+
+	// . "github.com/qingqingjia26/flannelLearn/pkg/ip"
 	"golang.org/x/net/context"
 )
 
