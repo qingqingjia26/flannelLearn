@@ -36,6 +36,7 @@ import (
 	"github.com/qingqingjia26/flannelLearn/pkg/ip"
 	"github.com/qingqingjia26/flannelLearn/subnet"
 	"github.com/qingqingjia26/flannelLearn/subnet/etcdv2"
+	"github.com/qingqingjia26/flannelLearn/subnet/etcdv3"
 	"github.com/qingqingjia26/flannelLearn/subnet/kube"
 	"github.com/qingqingjia26/flannelLearn/version"
 
@@ -173,19 +174,41 @@ func newSubnetManager() (subnet.Manager, error) {
 		Username:  opts.etcdUsername,
 		Password:  opts.etcdPassword,
 	}
-
 	// Attempt to renew the lease for the subnet specified in the subnetFile
 	prevSubnet := ReadCIDRFromSubnetFile(opts.subnetFile, "FLANNEL_SUBNET")
 
 	return etcdv2.NewLocalManager(cfg, prevSubnet)
 }
 
+func newSubnetManagerEctdv3(subnet.Manager, error) {
+	if opts.kubeSubnetMgr {
+		return kube.NewSubnetManager(opts.kubeApiUrl, opts.kubeConfigFile, opts.kubeAnnotationPrefix, opts.netConfPath)
+	}
+
+	cfg := &etcdv3.EtcdConfig{
+		Endpoints: strings.Split(opts.etcdEndpoints, ","),
+		Keyfile:   opts.etcdKeyfile,
+		Certfile:  opts.etcdCertfile,
+		CAFile:    opts.etcdCAFile,
+		Prefix:    opts.etcdPrefix,
+		Username:  opts.etcdUsername,
+		Password:  opts.etcdPassword,
+	}
+	// Attempt to renew the lease for the subnet specified in the subnetFile
+	prevSubnet := ReadCIDRFromSubnetFile(opts.subnetFile, "FLANNEL_SUBNET")
+
+	return etcdv3.NewLocalManager(cfg, prevSubnet)
+}
+
+const (
+	apiEnv = "ETCDCTL_API"
+)
+
 func main() {
 	if opts.version {
 		fmt.Fprintln(os.Stderr, version.Version)
 		os.Exit(0)
 	}
-
 	flagutil.SetFlagsFromEnv(flannelFlags, "FLANNELD")
 
 	// Validate flags
@@ -238,7 +261,14 @@ func main() {
 		}
 	}
 
-	sm, err := newSubnetManager()
+	apiv := os.Getenv(apiEnv)
+	os.Unsetenv(apiEnv)
+	var sm subnet.Manager
+	if len(apiv) == 0 || apiv == "3" {
+		sm, err = newSubnetManagerEctdv3()
+	} else {
+		sm, err = newSubnetManager()
+	}
 	if err != nil {
 		log.Error("Failed to create SubnetManager: ", err)
 		os.Exit(1)
